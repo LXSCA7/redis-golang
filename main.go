@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-redis/redis"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -25,8 +26,8 @@ type ProductsJson struct {
 }
 
 var db *sql.DB
+var redisClient *redis.Client
 
-const cachePath = "./cache/top_sellers.json"
 const databasePath = "./database.sql"
 
 func main() {
@@ -35,13 +36,18 @@ func main() {
 	if len(os.Args) > 1 {
 		insert = os.Args[1] == "insert"
 	}
+
+	connectRedis()
 	connectDb(insert)
 	defer db.Close()
-	products := getCachedTopSellers()
+
+	products := getProductsFromRedis()
 	if products == nil {
+		fmt.Println("getting from database...")
 		products = getTopSellers()
-		saveCache(products)
+		setProductsOnRedis(products, 5*time.Minute)
 	}
+
 	fmt.Printf("time elapsed: %vs\n", time.Since(start).Seconds())
 	for _, p := range products {
 		fmt.Println(p)
@@ -98,52 +104,6 @@ func populateDatabase() {
 	}
 }
 
-func getCachedTopSellers() []Product {
-	fmt.Println("getting products in cache")
-	file, err := os.Stat(cachePath)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-
-	if time.Since(file.ModTime()) > 5*time.Minute {
-		return nil
-	}
-
-	productsBytes, err := os.ReadFile(cachePath)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-
-	var cachedProducts ProductsJson
-	if err = json.Unmarshal(productsBytes, &cachedProducts); err != nil {
-		fmt.Println(err)
-		return nil
-	}
-
-	return cachedProducts.Products
-}
-
-func saveCache(products []Product) {
-	fmt.Println("getting products in database")
-	productsJson := ProductsJson{
-		Products: products,
-	}
-
-	jsonData, err := json.Marshal(productsJson)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	err = os.WriteFile(cachePath, jsonData, 0644)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-}
-
 func getTopSellers() []Product {
 	rows, err := db.Query("SELECT * FROM products ORDER BY sells LIMIT 10;")
 	if err != nil {
@@ -166,4 +126,43 @@ func getTopSellers() []Product {
 	}
 
 	return products
+}
+
+func connectRedis() {
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+}
+
+func setProductsOnRedis(products []Product, expiration time.Duration) {
+	productsJson := ProductsJson{Products: products}
+	jsonData, err := json.Marshal(productsJson)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	err = redisClient.Set("products", string(jsonData), expiration).Err()
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func getProductsFromRedis() []Product {
+	val, err := redisClient.Get("products").Result()
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+
+	var jsonProducts ProductsJson
+	err = json.Unmarshal([]byte(val), &jsonProducts)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+
+	return jsonProducts.Products
 }
