@@ -1,0 +1,6 @@
+services:
+  redis:
+    container_name: redis-db 
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
