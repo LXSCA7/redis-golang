@@ -116,7 +116,6 @@ func getTopSellers() []Product {
 		if err != nil {
 			log.Fatalf("error: %v", err)
 		}
-		fmt.Println(p)
 		products = append(products, p)
 	}
 
